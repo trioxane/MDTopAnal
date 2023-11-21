@@ -2,6 +2,21 @@ import numpy as np
 from scipy.spatial import Voronoi
 
 
+def calc_angles(ps1, ps2, ps3):
+
+    vs1 = np.array(ps1) - ps2
+    vs2 = np.array(ps3) - ps2
+    a = np.array(list(map(np.linalg.norm, vs1))) * list(map(np.linalg.norm, vs2))
+    a[a == 0] = None
+    with np.warnings.catch_warnings():
+        cos = np.array([np.dot(v1, v2) / a for v1, v2, a in zip(vs1, vs2, a)])
+        cos[cos > 1] = 1.0
+        cos[cos < -1] = - 1.0
+        angles = np.arccos(cos)
+        angles[angles > np.pi] = np.pi
+    return angles
+
+
 def are_collinear(vs, tol=0.01):
 
     if len(vs) < 2:
@@ -30,27 +45,52 @@ def are_coplanar(vs, tol=0.01):
     return True
 
 
-def find_vneighbors(points, central_points, key=1):
+def is_inside(vertices, pt, tol=0.001):
 
-    """
-     Parameter mod can takes values 1, 2, or 3 that correspond to the
-    search for domains adjacent by vertices, edges or faces.
-    """
 
-    neighbors = {i: None for i in central_points}
-    vor = Voronoi(points)
-    for i in central_points:
-        region = vor.regions[vor.point_region[i]]
-        if -1 in region:
-            raise ValueError("The domain for \"" + str(i) + "\" point is not closed!")
-        local_neighbors = []
-        for j in range(len(points)):
-            numb_common_vertices = len(np.intersect1d(region, vor.regions[vor.point_region[j]]))
-            if i != j and numb_common_vertices >= key:
-                local_neighbors.append(j)
-        neighbors[i] = local_neighbors
-    return neighbors
+    inside = False
+    n_v = len(vertices)
+    centroid = sum(vertices) / n_v
+    v1 = pt - centroid
+    if sum(abs(v1)) < tol:
+        return True
+    v2, v3 = vertices[:2] - centroid
+    norm = np.cross(v2, v3)
+    norm /= np.linalg.norm(norm)
+    if abs(np.dot(v1 / np.linalg.norm(v1), norm)) > tol:
+        return False
+    angles_sum = sum(calc_angles(vertices, [pt]*len(vertices), [*vertices[1:], vertices[0]])) / np.pi
+    if abs(angles_sum - round(angles_sum)) < 1e-9:
+        return True
+    return inside
 
+
+class Voro:
+
+    #Central points should be first in the points list
+
+    def __init__(self, points, num_central):
+
+        self.points = np.array(points)
+        self.num_central = num_central
+        self.vor = Voronoi(points)
+        self.p_adjacency = self.calc_p_adjacency()
+
+    def calc_p_adjacency(self):
+
+        p_adjacency = [[] for _ in range(self.num_central)]
+        for (p1, p2), vertices in self.vor.ridge_dict.items():
+            if -1 not in vertices and (p1 < self.num_central or p2 < self.num_central):
+                if is_inside(self.vor.vertices[vertices], sum(self.vor.points[[p1, p2]]) / 2):
+                    contact_type = "direct"
+                else:
+                    contact_type = "indirect"
+                if p1 < self.num_central:
+                    p_adjacency[p1] += [(p2, contact_type)]
+                if p2 < self.num_central:
+                    p_adjacency[p2] += [(p1, contact_type)]
+        self.p_adjacency = p_adjacency
+        return self.p_adjacency
 
 
 

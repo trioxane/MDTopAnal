@@ -11,6 +11,7 @@ class PeriodicGraph:
                  vertex_attributes={},
                  edges_attributes={}):
 
+        self.v_number = len(vertices)
         self.vertices = vertices
         self.edges = np.array(edges)
         self.translations = np.array(translations, dtype=int)
