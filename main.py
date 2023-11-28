@@ -1,5 +1,5 @@
 from read_write import read_xyz
-from geometry import Voro
+from geometry import Voro, calc_angles
 from constants import*
 from graph import PeriodicGraph
 from collections import Counter
@@ -73,9 +73,7 @@ class UnitCell:
         if self.orthogonal:
             cart_coords = fract_coords * np.tile([self.a, self.b, self.c], (n, 1))
         else:
-            cart_coords = (np.tile(self.vectors[0], (n, 1)) * np.tile(fract_coords[:, 0][:, np.newaxis], (1, 3))
-                           + np.tile(self.vectors[1], (n, 1)) * np.tile(fract_coords[:, 1][:, np.newaxis], (1, 3))
-                           + np.tile(self.vectors[2], (n, 1)) * np.tile(fract_coords[:, 2][:, np.newaxis], (1, 3)))
+            cart_coords = np.dot(fract_coords, self.vectors)
         return cart_coords
 
     def get_fract_coords(self, cart_coords):
@@ -85,9 +83,7 @@ class UnitCell:
         if self.orthogonal:
             fract_coords = cart_coords / np.tile([self.a, self.b, self.c], (n, 1))
         else:
-            fract_coords = (np.tile(self.inv_vectors[0], (n, 1)) * np.tile(cart_coords[:, 0][:, np.newaxis], (1, 3))
-                            + np.tile(self.inv_vectors[1], (n, 1)) * np.tile(cart_coords[:, 1][:, np.newaxis], (1, 3))
-                            + np.tile(self.inv_vectors[2], (n, 1)) * np.tile(cart_coords[:, 2][:, np.newaxis], (1, 3)))
+            fract_coords = np.dot(cart_coords, self.inv_vectors)
         return fract_coords
 
 
@@ -113,6 +109,18 @@ class Structure:
         self.adjacency_list = []
         self.molecular_groups = []
 
+    def get_atom_fract_coord(self, atom_index, translation):
+
+        return self.fract_coords[atom_index] + translation
+
+    def get_atom_cart_coord(self, atom_index, translation):
+        
+        return self.cart_coords[atom_index] + np.dot(self.unit_cell.inv_vectors, translation)
+
+    def get_atom_neighbors(self,  atom_index, translation, bond_types={}):
+
+        return [[i, (t[0] + translation[0], t[1] + translation[1], t[2] + translation[2]), b_t]
+                for i, t, b_t in self.adjacency_list[atom_index] if len(bond_types) == 0 or b_t in bond_types]
 
     @staticmethod
     def get_formula(symbol_list):
@@ -126,7 +134,7 @@ class Structure:
                 formula += f"{symbol}{count}"
         return formula
 
-    def cal_bonds(self, tol=0.1):
+    def cal_bonds(self, tol=0.2):
 
         a, b, c = self.unit_cell.vectors
         translations = [(i, j, k) for i in range(-1, 2) for j in range(-1, 2) for k in range(-1, 2)]
@@ -154,6 +162,44 @@ class Structure:
         self.adjacency_list = np.array([list(set(ns)) for ns in adjacency_list])
         return self.adjacency_list
 
+    def find_hydrogen_bonds(self,
+                           a_1={'N', 'O'},
+                           a_2={'N', 'O', 'F', 'S', 'Cl'},
+                           r_1=2.5,
+                           r_2=3.5,
+                           angle=120):
+        """
+        a_1: list of A atoms, ['N', 'O']
+        a_2: list of B atoms, ['N', 'O', 'F', 'S', 'Cl']
+        r_1: the maximal distance H...B, float
+        r_2: the maximal distance A...B, float
+        angle: the minimal angle AHB, float
+        """
+
+        for i, ns in enumerate(self.adjacency_list):
+            for j, (b, t, bond_type) in enumerate(ns):
+                if bond_type == 'vw':
+                    angle = angle * np.pi / 180
+                    if self.symbols[i] == "H":
+                        h = i
+                    elif self.symbols[j] == "H":
+                        b, h, t = i, b, (-t[0], -t[1], -t[2])
+                    else:
+                        continue
+                    b_coord = self.get_atom_cart_coord(b, t)
+                    h_b_length = np.linalg.norm(self.cart_coords[h] - b_coord)
+                    if self.symbols[b] in a_2 and h_b_length < r_1 :
+                        for a, t_2, bond_type_2 in self.get_atom_neighbors(b, t, {"vw"}):
+                            a_coord = self.get_atom_cart_coord(a, t_2)
+                            a_b_length = np.linalg.norm(a_coord - b_coord)
+                            if (
+                                    a != h and
+                                    self.symbols[a] in a_1 and  a_b_length < r_2 and
+                                    calc_angles([self.cart_coords[h]], [b_coord], [a_coord])[0] > angle
+                            ):
+                                k, t_3, b_t = self.adjacency_list[i][j]
+                                self.adjacency_list[i][j] = [k, t_3, "hb"]
+
     def find_molecular_groups(self):
 
         if len(self.adjacency_list) == 0:
@@ -166,7 +212,7 @@ class Structure:
         self.molecular_groups = [(group, periodicity) for group, periodicity in pg.calc_periodicity()]
         return self.molecular_groups
 
-    def get_molecular_graph(self):
+    def get_molecular_graph(self, bond_types={"vw", "bb"}):
 
         if len(self.molecular_groups) == 0:
             self.find_molecular_groups()
@@ -178,9 +224,11 @@ class Structure:
         centroids = np.array(centroids)
 
         for i, (group, p) in enumerate(self.molecular_groups):
+            print(i, self.get_formula(self.symbols[[a for a, t in group]]))
             if p != 0:
                 raise Exception("There are polymer groups!")
-            neighbors = [(n, t_1 + t_2) for a, t_1 in group for n, t_2, bt in self.adjacency_list[a] if bt == "vw"]
+            neighbors = [(n, t_1 + t_2) for a, t_1 in group for n, t_2, bt in self.adjacency_list[a]
+                         if bt in bond_types]
             for n, t_1 in neighbors:
                 mol_index, t_2 = atom_molecules[n]
                 molecular_adjacency_list[i].append((mol_index, tuple(t_1 - t_2), "v"))
@@ -258,7 +306,12 @@ class Structure:
 for i, frame in enumerate(read_xyz("glucmdc_295K.xyz")):
     _, symbols, coordinates, lattice = frame
     structure = Structure(str(i), lattice, symbols, coordinates)
-    with open("{}_graph.cif".format(i), "w") as nf:
-        nf.write(str(structure.get_molecular_graph()))
+    structure.cal_bonds()
+    structure.find_hydrogen_bonds()
+    h_graph = structure.get_molecular_graph(bond_types={"hb"})
+    with open("{}_structure.cif".format(i), "w") as nf:
+        nf.write(str(structure))
+    with open("{}_h_graph.cif".format(i), "w") as nf:
+        nf.write(str(h_graph))
     print(i, "done")
 
