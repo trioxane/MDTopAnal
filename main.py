@@ -1,9 +1,12 @@
 from read_write import read_xyz
-from geometry import Voro, calc_angles
-from constants import*
+from geometry import Voro, angle_between
+from constants import *
 from graph import PeriodicGraph
 from collections import Counter
 
+import networkx as nx
+import matplotlib.pyplot as plt
+from time import time
 
 class UnitCell:
 
@@ -110,15 +113,12 @@ class Structure:
         self.molecular_groups = []
 
     def get_atom_fract_coord(self, atom_index, translation):
-
         return self.fract_coords[atom_index] + translation
 
     def get_atom_cart_coord(self, atom_index, translation):
-        
-        return self.cart_coords[atom_index] + np.dot(self.unit_cell.inv_vectors, translation)
+        return self.cart_coords[atom_index] + np.dot(self.unit_cell.vectors, translation)
 
-    def get_atom_neighbors(self,  atom_index, translation, bond_types={}):
-
+    def get_atom_neighbors(self, atom_index, translation, bond_types=()):
         return [[i, (t[0] + translation[0], t[1] + translation[1], t[2] + translation[2]), b_t]
                 for i, t, b_t in self.adjacency_list[atom_index] if len(bond_types) == 0 or b_t in bond_types]
 
@@ -134,7 +134,7 @@ class Structure:
                 formula += f"{symbol}{count}"
         return formula
 
-    def cal_bonds(self, tol=0.2):
+    def calculate_atomic_connectivity(self, tol=0.2):
 
         a, b, c = self.unit_cell.vectors
         translations = [(i, j, k) for i in range(-1, 2) for j in range(-1, 2) for k in range(-1, 2)]
@@ -151,59 +151,66 @@ class Structure:
         for i, neighbors in enumerate(contacts):
             for j, type in neighbors:
                 index, translation = atom_index_translation[j]
-                r = self.atomic_radii[i] + self.atomic_radii[index]
-                if (type == "direct"
-                        and np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) < r + r * tol):
-                    contact_type = "v"
+                radii_sum = self.atomic_radii[i] + self.atomic_radii[index]
+                contact_length = np.linalg.norm(extended_coordinates[i] - extended_coordinates[j])
+                if type == 'direct' and contact_length < (1 + tol) * radii_sum:
+                    contact_type = 'v'
+                elif type == 'direct':
+                    contact_type = 'vw'
                 else:
-                    contact_type = "vw"
+                    continue
                 adjacency_list[i].append((index, translation, contact_type))
                 adjacency_list[index].append((i, (-translation[0], -translation[1], -translation[2]), contact_type))
-        self.adjacency_list = np.array([list(set(ns)) for ns in adjacency_list])
+        self.adjacency_list = np.array([list(set(ns)) for ns in adjacency_list], dtype=object)
         return self.adjacency_list
 
-    def find_hydrogen_bonds(self,
-                           a_1={'N', 'O'},
-                           a_2={'N', 'O', 'F', 'S', 'Cl'},
-                           r_1=2.5,
-                           r_2=3.5,
-                           angle=120):
+
+    def find_hydrogen_bonds(
+            self,
+            D_atoms=('N', 'O'),
+            A_atoms=('N', 'O'),
+            HA_threshold=2.5,
+            DHA_threshold_angle=120.0
+    ):
         """
-        a_1: list of A atoms, ['N', 'O']
-        a_2: list of B atoms, ['N', 'O', 'F', 'S', 'Cl']
-        r_1: the maximal distance H...B, float
-        r_2: the maximal distance A...B, float
-        angle: the minimal angle AHB, float
+        D-H...A hydrogen bond identification
+        D_atoms: list of D atoms: N, O
+        A_atoms: list of A atoms: N, O
+        HA_threshold: the maximal distance H...A, float
+        DHA_threshold_angle: the minimal angle DHA, float
         """
 
-        for i, ns in enumerate(self.adjacency_list):
-            for j, (b, t, bond_type) in enumerate(ns):
-                if bond_type == 'vw':
-                    angle = angle * np.pi / 180
-                    if self.symbols[i] == "H":
-                        h = i
-                    elif self.symbols[j] == "H":
-                        b, h, t = i, b, (-t[0], -t[1], -t[2])
-                    else:
-                        continue
-                    b_coord = self.get_atom_cart_coord(b, t)
-                    h_b_length = np.linalg.norm(self.cart_coords[h] - b_coord)
-                    if self.symbols[b] in a_2 and h_b_length < r_1 :
-                        for a, t_2, bond_type_2 in self.get_atom_neighbors(b, t, {"vw"}):
-                            a_coord = self.get_atom_cart_coord(a, t_2)
-                            a_b_length = np.linalg.norm(a_coord - b_coord)
-                            if (
-                                    a != h and
-                                    self.symbols[a] in a_1 and  a_b_length < r_2 and
-                                    calc_angles([self.cart_coords[h]], [b_coord], [a_coord])[0] > angle
-                            ):
-                                k, t_3, b_t = self.adjacency_list[i][j]
-                                self.adjacency_list[i][j] = [k, t_3, "hb"]
+        DHA_threshold_angle = DHA_threshold_angle * np.pi / 180
+
+        for h_atom_index, h_atom_neigbours in enumerate(self.adjacency_list):
+            if self.symbols[h_atom_index] == 'H':
+                for _, (d_atom_index, t_d, dh_bond_type) in enumerate(h_atom_neigbours):
+                    if self.symbols[d_atom_index] in D_atoms and dh_bond_type == 'v':
+                        for ind, (a_atom_index, t_a, ha_bond_type) in enumerate(h_atom_neigbours):
+                            if self.symbols[a_atom_index] in A_atoms:
+                                a_coord = self.get_atom_cart_coord(a_atom_index, t_a)
+                                h_coord = self.cart_coords[h_atom_index]
+                                d_coord = self.get_atom_cart_coord(d_atom_index, t_d)
+                                ha_distance = np.linalg.norm(h_coord - a_coord)
+                                DHA_angle = angle_between(d_coord - h_coord, a_coord - h_coord)
+                                if (
+                                        ha_distance < HA_threshold and
+                                        ha_bond_type == 'vw' and
+                                        DHA_angle > DHA_threshold_angle
+                                ):
+                                    # print(self.symbols[d_atom_index], self.symbols[h_atom_index], self.symbols[a_atom_index])
+                                    # print(d_coord, h_coord, a_coord)
+                                    # print(d_atom_index, h_atom_index, a_atom_index, ha_distance, np.rad2deg(DHA_angle), dh_bond_type, ha_bond_type)
+                                    self.adjacency_list[h_atom_index][ind] = (a_atom_index, t_a, 'hb')
+                                    loc = self.adjacency_list[a_atom_index].index((h_atom_index, (-t_a[0], -t_a[1], -t_a[2]), 'vw'))
+                                    self.adjacency_list[a_atom_index][loc] = (h_atom_index, (-t_a[0], -t_a[1], -t_a[2]), 'hb')
+
+        return None
 
     def find_molecular_groups(self):
 
         if len(self.adjacency_list) == 0:
-            self.cal_bonds()
+            self.calculate_atomic_connectivity()
         covalent_bonds = [((i, j), tr) for i, ns in enumerate(self.adjacency_list)
                           for j, tr, bt in ns if i <= j and bt == "v"]
         bonds = [b for b, _ in covalent_bonds]
@@ -212,7 +219,7 @@ class Structure:
         self.molecular_groups = [(group, periodicity) for group, periodicity in pg.calc_periodicity()]
         return self.molecular_groups
 
-    def get_molecular_graph(self, bond_types={"vw", "bb"}):
+    def get_molecular_graph(self, bond_types={"vw", "hb"}):
 
         if len(self.molecular_groups) == 0:
             self.find_molecular_groups()
@@ -303,15 +310,18 @@ class Structure:
         return data
 
 
-for i, frame in enumerate(read_xyz("glucmdc_295K.xyz")):
+tic = time()
+for i, frame in enumerate(read_xyz('acetic_acid.xyz')):
+    start_time = time()
     _, symbols, coordinates, lattice = frame
     structure = Structure(str(i), lattice, symbols, coordinates)
-    structure.cal_bonds()
-    structure.find_hydrogen_bonds()
-    h_graph = structure.get_molecular_graph(bond_types={"hb"})
+    structure.calculate_atomic_connectivity()
+    structure.find_hydrogen_bonds(D_atoms=('O', 'N', 'C'), DHA_threshold_angle=135.0)
+    h_graph = structure.get_molecular_graph(bond_types={'hb'})
     with open("{}_structure.cif".format(i), "w") as nf:
         nf.write(str(structure))
     with open("{}_h_graph.cif".format(i), "w") as nf:
         nf.write(str(h_graph))
-    print(i, "done")
+    print(f'Frame {i} calculated in {int(time() - start_time)} s')
 
+print(f'Total calculation time: {int(time() - tic)} s')

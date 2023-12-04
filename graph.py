@@ -52,7 +52,6 @@ class PeriodicGraph:
     @staticmethod
     def get_periodicity(translations):
 
-        translations
         if len(translations) == 0:
             return 0
         elif are_collinear(translations, tol=0):
