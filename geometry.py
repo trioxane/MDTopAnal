@@ -1,6 +1,5 @@
 import numpy as np
 from scipy.spatial import Voronoi
-import warnings
 
 
 def calc_angles(ps1, ps2, ps3):
@@ -9,7 +8,7 @@ def calc_angles(ps1, ps2, ps3):
     vs2 = np.array(ps3) - ps2
     a = np.array(list(map(np.linalg.norm, vs1))) * list(map(np.linalg.norm, vs2))
     a[a == 0] = None
-    with warnings.catch_warnings():
+    with np.warnings.catch_warnings():
         cos = np.array([np.dot(v1, v2) / a for v1, v2, a in zip(vs1, vs2, a)])
         cos[cos > 1] = 1.0
         cos[cos < -1] = - 1.0
@@ -93,17 +92,8 @@ class Voro:
         self.p_adjacency = p_adjacency
         return self.p_adjacency
 
-def unit_vector(vector):
-    """
-    Returns the unit vector of the vector
-    """
-    return vector / np.linalg.norm(vector)
 
-def angle_between(v1, v2):
-    """
-    Returns the angle in degrees between vectors v1 and v2
-    """
-    v1_u = unit_vector(v1)
-    v2_u = unit_vector(v2)
-    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+
+
+
 
