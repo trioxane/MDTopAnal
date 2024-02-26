@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial import Voronoi
+import warnings
 
 
 def calc_angles(ps1, ps2, ps3):
@@ -8,7 +9,7 @@ def calc_angles(ps1, ps2, ps3):
     vs2 = np.array(ps3) - ps2
     a = np.array(list(map(np.linalg.norm, vs1))) * list(map(np.linalg.norm, vs2))
     a[a == 0] = None
-    with np.warnings.catch_warnings():
+    with warnings.catch_warnings():
         cos = np.array([np.dot(v1, v2) / a for v1, v2, a in zip(vs1, vs2, a)])
         cos[cos > 1] = 1.0
         cos[cos < -1] = - 1.0
@@ -47,7 +48,6 @@ def are_coplanar(vs, tol=0.01):
 
 def is_inside(vertices, pt, tol=0.001):
 
-
     inside = False
     n_v = len(vertices)
     centroid = sum(vertices) / n_v
@@ -64,6 +64,41 @@ def is_inside(vertices, pt, tol=0.001):
         return True
     return inside
 
+def solid_angle(center, coords):
+    """
+    Helper method to calculate the solid angle of a set of coords from the
+    center.
+
+    Args:
+        center (3x1 array): Center to measure solid angle from.
+        coords (Nx3 array): List of coords to determine solid angle.
+
+    Returns:
+        The solid angle.
+    """
+    # Compute the displacement from the center
+    r = [np.subtract(c, center) for c in coords]
+
+    # Compute the magnitude of each vector
+    r_norm = [np.linalg.norm(i) for i in r]
+
+    # Compute the solid angle for each tetrahedron that makes up the facet
+    #  Following: https://en.wikipedia.org/wiki/Solid_angle#Tetrahedron
+    angle = 0
+    for i in range(1, len(r) - 1):
+        j = i + 1
+        tp = np.abs(np.dot(r[0], np.cross(r[i], r[j])))
+        de = (
+            r_norm[0] * r_norm[i] * r_norm[j]
+            + r_norm[j] * np.dot(r[0], r[i])
+            + r_norm[i] * np.dot(r[0], r[j])
+            + r_norm[0] * np.dot(r[i], r[j])
+        )
+        my_angle = (0.5 * pi if tp > 0 else -0.5 * pi) if de == 0 else np.arctan(tp / de)
+        angle += (my_angle if my_angle > 0 else my_angle + np.pi) * 2
+
+    return angle
+
 
 class Voro:
 
@@ -76,24 +111,36 @@ class Voro:
         self.vor = Voronoi(points)
         self.p_adjacency = self.calc_p_adjacency()
 
-    def calc_p_adjacency(self):
+    def calc_p_adjacency(self, OMEGA_THRESHOLD=0.25, check_direct=False):
+        """
+        OMEGA_THRESHOLD: (0.1-0.2)
+        """
 
         p_adjacency = [[] for _ in range(self.num_central)]
+        # Get the coordinates of every vertex
+        all_vertices = self.vor.vertices
         for (p1, p2), vertices in self.vor.ridge_dict.items():
             if -1 not in vertices and (p1 < self.num_central or p2 < self.num_central):
-                if is_inside(self.vor.vertices[vertices], sum(self.vor.points[[p1, p2]]) / 2):
-                    contact_type = "direct"
+
+                if OMEGA_THRESHOLD is not None:
+                    # Get the solid angle of the face and check if it is not too small
+                    facets = [all_vertices[i] for i in vertices]
+                    p1_coords = self.points[p1]
+                    solid_angle_p1 = solid_angle(p1_coords, facets)
+                    if solid_angle_p1 < OMEGA_THRESHOLD:
+                        continue
+
+                if check_direct:
+                    if is_inside(self.vor.vertices[vertices], sum(self.vor.points[[p1, p2]]) / 2):
+                        contact_type = "direct"
+                    else:
+                        contact_type = "indirect"
                 else:
-                    contact_type = "indirect"
+                    contact_type = "direct"
+
                 if p1 < self.num_central:
                     p_adjacency[p1] += [(p2, contact_type)]
                 if p2 < self.num_central:
                     p_adjacency[p2] += [(p1, contact_type)]
         self.p_adjacency = p_adjacency
         return self.p_adjacency
-
-
-
-
-
-

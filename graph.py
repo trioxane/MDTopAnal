@@ -1,5 +1,9 @@
 import numpy as np
+import networkx as nx
 from geometry import are_collinear, are_coplanar
+
+import pickle
+import itertools
 
 
 class PeriodicGraph:
@@ -52,7 +56,6 @@ class PeriodicGraph:
     @staticmethod
     def get_periodicity(translations):
 
-        translations
         if len(translations) == 0:
             return 0
         elif are_collinear(translations, tol=0):
@@ -62,12 +65,37 @@ class PeriodicGraph:
         return 3
 
 
+t_DICT = {
+    t: (-t[0], -t[1], -t[2])
+    for t in list(itertools.product((-1, 0, 1), (-1, 0, 1), (-1, 0, 1)))[:13]
+}
 
+class NetworkxGraph:
 
+    def __init__(self, Structure_graph):
 
+        centroid_adjacency_list = Structure_graph.adjacency_list
+        centroid_cart_coords = Structure_graph.cart_coords
+        self.name = Structure_graph.name
 
+        G = nx.MultiGraph(name=self.name)
+        for node1, neigbours in enumerate(centroid_adjacency_list):
+            node1_coordinates = centroid_cart_coords[node1]
+            G.add_node(node1, coordinates=node1_coordinates)
+            for neigbour in neigbours:
+                node2, translation, _ = neigbour
+                if translation == (0, 0, 0):
+                    G.add_edge(node1, node2, key=translation)
+                else:
+                    # avoiding duplication of edges in the LQG
+                    # by mapping half of the translations to its mirrors
+                    translation = t_DICT.get(translation, translation)
+                    G.add_edge(node1, node2, key=translation)
 
+        self.G = G
 
-
-
-
+    def get_graph(self):
+        return self.G
+    def save_graph(self, number):
+        with open(f'G_{self.name}_{number}.nxg', 'wb') as out:
+            pickle.dump(self.G, out)
