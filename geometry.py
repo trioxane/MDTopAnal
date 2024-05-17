@@ -1,5 +1,7 @@
 import numpy as np
 from scipy.spatial import Voronoi
+
+from collections import defaultdict
 import warnings
 
 
@@ -17,7 +19,6 @@ def calc_angles(ps1, ps2, ps3):
         angles[angles > np.pi] = np.pi
     return angles
 
-
 def are_collinear(vs, tol=0.01):
 
     if len(vs) < 2:
@@ -27,7 +28,6 @@ def are_collinear(vs, tol=0.01):
         if sum(abs(np.cross(v_0, v))) > tol:
             return False
     return True
-
 
 def are_coplanar(vs, tol=0.01):
 
@@ -44,7 +44,6 @@ def are_coplanar(vs, tol=0.01):
         if abs(np.dot(ab, v)) > tol:
             return False
     return True
-
 
 def is_inside(vertices, pt, tol=0.001):
 
@@ -64,7 +63,7 @@ def is_inside(vertices, pt, tol=0.001):
         return True
     return inside
 
-def solid_angle(center, coords):
+def calculate_solid_angle(center, coords):
     """
     Helper method to calculate the solid angle of a set of coords from the
     center.
@@ -99,11 +98,9 @@ def solid_angle(center, coords):
 
     return angle
 
-
 class Voro:
 
     #Central points should be first in the points list
-
     def __init__(self, points, num_central):
 
         self.points = np.array(points)
@@ -111,23 +108,68 @@ class Voro:
         self.vor = Voronoi(points)
         self.p_adjacency = self.calc_p_adjacency()
 
-    def calc_p_adjacency(self, OMEGA_THRESHOLD=0.25, check_direct=False):
+    def get_VDP_data(self, omega_threshold: float = 0.05) -> dict:
+        """
+        Constructs VDP for each point and returns its VDP characteristics
+        as well as contact types with neighbours
+        Args:
+            omega_threshold: threshold solid angle; small VDP faces will be ignored
+
+        Returns:
+            neighbours_dict: dict with neighbours characteristics
+        """
+        p_neighbours_dict = defaultdict(list)
+        all_vertices = self.vor.vertices
+
+        for (p1, p2), vertices in self.vor.ridge_dict.items():
+
+            if -1 not in vertices and (p1 < self.num_central or p2 < self.num_central):
+
+                # Get the solid angle of the face and check if it is not too small
+                facets = [all_vertices[i] for i in vertices]
+                p1_coords = self.points[p1]
+                solid_angle_p1 = calculate_solid_angle(p1_coords, facets)
+                if solid_angle_p1 < omega_threshold:
+                    continue
+
+                if is_inside(all_vertices[vertices], self.points[[p1, p2]].sum(axis=0) / 2):
+                    contact_type = "direct"
+                else:
+                    contact_type = "indirect"
+
+                if p1 < self.num_central:
+                    p_neighbours_dict[p1].append((p2, solid_angle_p1, contact_type))
+                if p2 < self.num_central:
+                    p_neighbours_dict[p2].append((p1, solid_angle_p1, contact_type))
+
+        neighbours_dict = {
+            p1: {
+                'neighbour_index': [nd[0] for nd in neighbours],
+                 'SA': [nd[1] for nd in neighbours],
+                 'N_direct_neigbours': len([nd[2] for nd in neighbours if nd[2] == 'direct']),
+                 'N_indirect_neigbours': len([nd[2] for nd in neighbours if nd[2] == 'indirect'])
+            }
+            for p1, neighbours in p_neighbours_dict.items()
+        }
+
+        return neighbours_dict
+
+    def calc_p_adjacency(self, omega_threshold=0.25, check_direct=False):
         """
         OMEGA_THRESHOLD: (0.1-0.2)
         """
-
         p_adjacency = [[] for _ in range(self.num_central)]
         # Get the coordinates of every vertex
         all_vertices = self.vor.vertices
         for (p1, p2), vertices in self.vor.ridge_dict.items():
             if -1 not in vertices and (p1 < self.num_central or p2 < self.num_central):
 
-                if OMEGA_THRESHOLD is not None:
+                if omega_threshold is not None:
                     # Get the solid angle of the face and check if it is not too small
                     facets = [all_vertices[i] for i in vertices]
                     p1_coords = self.points[p1]
-                    solid_angle_p1 = solid_angle(p1_coords, facets)
-                    if solid_angle_p1 < OMEGA_THRESHOLD:
+                    solid_angle_p1 = calculate_solid_angle(p1_coords, facets)
+                    if solid_angle_p1 < omega_threshold:
                         continue
 
                 if check_direct:

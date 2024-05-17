@@ -72,30 +72,45 @@ t_DICT = {
 
 class NetworkxGraph:
 
-    def __init__(self, Structure_graph):
+    def __init__(self, Structure_graph, centroid_VDP_data, frame):
 
         centroid_adjacency_list = Structure_graph.adjacency_list
         centroid_cart_coords = Structure_graph.cart_coords
         self.name = Structure_graph.name
+        self.frame = frame
+        nodes_data = {}
 
         G = nx.MultiGraph(name=self.name)
         for node1, neigbours in enumerate(centroid_adjacency_list):
             node1_coordinates = centroid_cart_coords[node1]
+            node1_neigbours_SA_CV = np.std(centroid_VDP_data[node1]['SA']) / np.mean(centroid_VDP_data[node1]['SA'])
+            node1_N_direct_neigbours = centroid_VDP_data[node1]['N_direct_neigbours']
+            node1_N_indirect_neigbours = centroid_VDP_data[node1]['N_indirect_neigbours']
+            node1_N_neigbours = node1_N_direct_neigbours + node1_N_indirect_neigbours
+
+            nodes_data[node1] = {
+                'frame': self.frame,
+                'neigbours_SA_CV': node1_neigbours_SA_CV,
+                'N_direct_neigbours': node1_N_direct_neigbours,
+                'N_indirect_neigbours': node1_N_indirect_neigbours,
+                'N_neigbours': node1_N_neigbours
+            }
             G.add_node(node1, coordinates=node1_coordinates)
+
             for neigbour in neigbours:
                 node2, translation, _ = neigbour
-                if translation == (0, 0, 0):
-                    G.add_edge(node1, node2, key=translation)
-                else:
-                    # avoiding duplication of edges in the LQG
-                    # by mapping half of the translations to its mirrors
+                if translation != (0, 0, 0):
+                    # avoiding duplication of edges in the LQG by mapping half of the translations to its mirrors
                     translation = t_DICT.get(translation, translation)
-                    G.add_edge(node1, node2, key=translation)
+                G.add_edge(node1, node2, key=translation)
+
+            nodes_data[node1]['MCN'] = G.degree[node1]
 
         self.G = G
+        self.nodes_data = nodes_data
 
-    def get_graph(self):
-        return self.G
-    def save_graph(self, number):
-        with open(f'G_{self.name}_{number}.nxg', 'wb') as out:
+    def get_graph_data(self):
+        return dict(G=self.G, nodes_data=self.nodes_data)
+    def save_graph(self, frame_number):
+        with open(f'G_{self.name}_{frame_number}.nxg', 'wb') as out:
             pickle.dump(self.G, out)

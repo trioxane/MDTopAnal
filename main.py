@@ -7,6 +7,7 @@ from collections import Counter
 
 import pickle
 from time import time
+from tqdm import tqdm
 
 class UnitCell:
 
@@ -104,7 +105,6 @@ class Structure:
         elif len(cart_coords) == 0 and len(fract_coords) != 0:
             self.fract_coords = np.array(fract_coords) % 1
             self.cart_coords = self.unit_cell.get_cart_coord(self.fract_coords)
-
         else:
             self.cart_coords = cart_coords
             self.fract_coords = cart_coords
@@ -146,7 +146,23 @@ class Structure:
                 formula += f"{symbol}{count}"
         return formula
 
-    def cal_bonds(self, tol=0.2, OMEGA_THRESHOLD=0.25, check_direct=False):
+    def get_centroid_LVDP_data(self, omega_threshold=0.05):
+        """
+        For a set of centroids return characteristics of the lattice VDP
+        Args:
+            omega_threshold: threshold solid angle; small VDP faces will be ignored
+        """
+        a, b, c = self.unit_cell.vectors
+        translations = [(i, j, k) for i in range(-1, 2) for j in range(-1, 2) for k in range(-1, 2)]
+        translations.sort(key=lambda t: (abs(t[0]), abs(t[1]), abs(t[2])))
+        t_vectors = [i * a + j * b + k * c for i, j, k in translations]
+        extended_coordinates = [c + t for t in t_vectors for c in self.cart_coords]
+
+        points_VDP_data = Voro(extended_coordinates, len(self.cart_coords)).get_VDP_data(omega_threshold=omega_threshold)
+
+        return points_VDP_data
+
+    def identify_bonds(self, tol=0.2, omega_threshold=0.25, check_direct=False):
 
         a, b, c = self.unit_cell.vectors
         translations = [(i, j, k) for i in range(-1, 2) for j in range(-1, 2) for k in range(-1, 2)]
@@ -155,7 +171,7 @@ class Structure:
         extended_coordinates = [c + t for t in t_vectors for c in self.cart_coords]
         atom_index_translation = [(i, t) for t in translations for i in range(len(self.cart_coords))]
         contacts = Voro(extended_coordinates, len(self.cart_coords)).calc_p_adjacency(
-            OMEGA_THRESHOLD=OMEGA_THRESHOLD, check_direct=check_direct)
+            omega_threshold=omega_threshold, check_direct=check_direct)
         adjacency_list = [[] for _ in contacts]
         if self.atomic_radii is None:
             if self.atomic_numbers is None:
@@ -220,7 +236,7 @@ class Structure:
     def find_molecular_groups(self):
 
         if len(self.adjacency_list) == 0:
-            self.cal_bonds()
+            self.identify_bonds()
         covalent_bonds = [((i, j), tr) for i, ns in enumerate(self.adjacency_list)
                           for j, tr, bt in ns if i <= j and bt == "v"]
         bonds = [b for b, _ in covalent_bonds]
@@ -255,7 +271,7 @@ class Structure:
                 molecular_adjacency_list[i].append((mol_index, tuple(t_1 - t_2), "v"))
                 molecular_adjacency_list[mol_index].append((i, tuple(t_2 - t_1), "v"))
         molecular_adjacency_list = [list(set(ns)) for ns in molecular_adjacency_list]
-        mol_graph = Structure(self.name + "_mol_graph",
+        mol_graph = Structure(f"{self.name}_simplified",
                               self.unit_cell.vectors,
                               ["Rn"] * len(centroids),
                               fract_coords=centroids)
@@ -327,35 +343,46 @@ class Structure:
 
 
 tic = time()
-graphs = []
-system = 'water_md'
+for system in (
+        'water_md_full',
+        'benzac02mdc', 'benzac02mdc_reverse', 'crotac01mdc',
+        'glucmdc', 'glucmdc_420K', 'glucmdc_620K', 'py1mdc',
+):
 
-for i, frame in enumerate(read_xyz(f'{system}.xyz')):
-    start_time = time()
-    _, symbols, coordinates, lattice = frame
-    structure = Structure(str(i), lattice, symbols, coordinates)
-    structure.cal_bonds(tol=0.2, OMEGA_THRESHOLD=0.25, check_direct=False)
-    structure.find_hydrogen_bonds(
-        D_atoms=('O', 'N', 'C'),
-        A_atoms=('O', 'N'),
-        r_HA=2.5,
-        angle=120)
-    simplified_graph = structure.get_molecular_graph(bond_types=('hb', ))
-    # centroid_VDPs = f(simplified_graph) # get centroid VDP characteristics; list of VDP data for centroids
-    nx_simplified_graph = graph.NetworkxGraph(simplified_graph).get_graph() # write VDP data to node attributes
-    graphs.append(nx_simplified_graph)
-    if i % 50 == 0:
-        with open("{}_structure.cif".format(i), "w") as nf:
-            nf.write(str(structure))
-        with open("{}_h_graph.cif".format(i), "w") as nf:
-            nf.write(str(simplified_graph))
-    print(f'Frame {i} calculated in {time() - start_time:.1f} s')
+    selected_intermolecular_bonds = ('hb', )
+    MAX_FRAME = 1000
+    STEP = 4
+    analysis_results = []
 
-    if i == 150:
-        break
+    for i, frame in tqdm(enumerate(read_xyz(f'{system}.xyz')), desc=system):
 
-with open(f'G_list_{system}.nxg', 'wb') as out:
-    pickle.dump(graphs, out)
+        if i % STEP == 0:
+            _, symbols, coordinates, lattice = frame
+            structure = Structure(f"frame_{i}", lattice, symbols, coordinates)
+            structure.identify_bonds(tol=0.2, omega_threshold=0.25, check_direct=False)
+            if 'hb' in selected_intermolecular_bonds:
+                structure.find_hydrogen_bonds(
+                    D_atoms=('O', 'N', ),  # 'O' 'N' 'C'
+                    A_atoms=('O', 'N'),
+                    r_HA=2.5,
+                    angle=120
+                )
+            simplified_graph = structure.get_molecular_graph(bond_types=selected_intermolecular_bonds)
+            centroid_VDP_data = simplified_graph.get_centroid_LVDP_data(omega_threshold=0.1)
+            nx_snapshot_graph = graph.NetworkxGraph(simplified_graph, centroid_VDP_data, i).get_graph_data()
+            analysis_results.append(nx_snapshot_graph)
+
+            if i % 500 == 0:
+                with open(f"./cifs/{system}_frame_{i}_structure.cif", "w") as nf:
+                    nf.write(str(structure))
+                with open(f"./cifs/{system}_frame_{i}_simplified.cif", "w") as nf:
+                    nf.write(str(simplified_graph))
+
+        if i == MAX_FRAME:
+            break
+
+    with open(f'MDTopAnalysis_{system}.nxg', 'wb') as out:
+        pickle.dump(analysis_results, out)
 
 print(f'Total calculation time: {time() - tic:.1f} s')
 
