@@ -1,13 +1,15 @@
 import graph
 from read_write import read_xyz
 from geometry import Voro, calc_angles
-from constants import*
+from constants import *
 from graph import PeriodicGraph
 from collections import Counter
 
+import os
 import pickle
 from time import time
 from tqdm import tqdm
+
 
 class UnitCell:
 
@@ -92,13 +94,14 @@ class UnitCell:
 
 class Structure:
 
-    def __init__(self, name, unit_cell, symbols, cart_coords=[], fract_coords=[]):
+    def __init__(self, name, unit_cell, symbols, cart_coords=[], fract_coords=[], vconnectivity=None):
 
         self.name = name
         self.unit_cell = UnitCell(unit_cell)
         self.symbols = symbols
-        self.atomic_numbers = None
-        self.atomic_radii = None
+        self.vconnectivity = vconnectivity
+        self._fill_atomic_radii_atomic_numbers()
+
         if len(cart_coords) != 0 and len(fract_coords) == 0:
             self.fract_coords = self.unit_cell.get_fract_coords(cart_coords) % 1
             self.cart_coords = self.unit_cell.get_cart_coord(self.fract_coords)
@@ -110,6 +113,10 @@ class Structure:
             self.fract_coords = cart_coords
         self.adjacency_list = []
         self.molecular_groups = []
+
+    def _fill_atomic_radii_atomic_numbers(self):
+        self.atomic_numbers = np.array([get_number(s) for s in self.symbols])
+        self.atomic_radii = get_covalent_radii(self.atomic_numbers)
 
     @staticmethod
     def calc_coord_and_translation(fract_coord, prec=1e-4):
@@ -170,24 +177,34 @@ class Structure:
         t_vectors = [i * a + j * b + k * c for i, j, k in translations]
         extended_coordinates = [c + t for t in t_vectors for c in self.cart_coords]
         atom_index_translation = [(i, t) for t in translations for i in range(len(self.cart_coords))]
+
         contacts = Voro(extended_coordinates, len(self.cart_coords)).calc_p_adjacency(
             omega_threshold=omega_threshold, check_direct=check_direct)
+
         adjacency_list = [[] for _ in contacts]
-        if self.atomic_radii is None:
-            if self.atomic_numbers is None:
-                self.atomic_numbers = np.array([get_number(s) for s in self.symbols])
-            self.atomic_radii = get_covalent_radii(self.atomic_numbers)
         for i, neighbors in enumerate(contacts):
             for j, type in neighbors:
                 index, translation = atom_index_translation[j]
-                r = self.atomic_radii[i] + self.atomic_radii[index]
-                if (type == "direct"
-                        and np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) < r + r * tol):
-                    contact_type = "v"
+                # if there is no predefined valence bonds connectivity - calculate it for each frame from scratch
+                if self.vconnectivity is None:
+                    r = self.atomic_radii[i] + self.atomic_radii[index]
+                    if (
+                            type == "direct"
+                            and
+                            np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) < r * (1 + tol)
+                    ):
+                        contact_type = "v"
+                    else:
+                        contact_type = "vw"
                 else:
-                    contact_type = "vw"
+                    if ((i, index) in self.vconnectivity) or ((index, i) in self.vconnectivity):
+                        contact_type = "v"
+                    else:
+                        contact_type = "vw"
+
                 adjacency_list[i].append((index, translation, contact_type))
                 adjacency_list[index].append((i, (-translation[0], -translation[1], -translation[2]), contact_type))
+
         self.adjacency_list = np.array([list(set(ns)) for ns in adjacency_list], dtype=object)
         return self.adjacency_list
 
@@ -196,7 +213,6 @@ class Structure:
             D_atoms=('N', 'O'),
             A_atoms=('N', 'O'),
             r_HA=2.5,
-            # r_DA=3.5,
             angle=120):
         """
         In the D-H...A fragment
@@ -303,8 +319,7 @@ class Structure:
                      + "_atom_site.fract_z\n"
                      + "_atom_site_occupancy\n")
             for i, s in enumerate(self.symbols):
-                data += (s + str(i) + ' '
-                         + s + " 1.0 "
+                data += (f"{s}{i} {s} 1.0 "
                          + '%6.5f' % (self.fract_coords[i][0]) + ' '
                          + '%6.5f' % (self.fract_coords[i][1]) + ' '
                          + '%6.5f' % (self.fract_coords[i][2]) + ' 1.0\n')
@@ -316,10 +331,10 @@ class Structure:
             for i, s in enumerate(self.symbols):
                 data += "{} {} {} {} {} {}\n".format(i + 1, i + 1, s + str(i), s, "#",  s + str(i))
             data += ("loop_\n"
-                     + " _topol_node.id\n"
+                     + "_topol_node.id\n"
                      + "_topol_node.label\n")
             for i, s in enumerate(self.symbols):
-                data += "{} {}\n".format(i + 1, s + str(i))
+                data += f"{i+1} {s}{i}\n"
         if len(self.adjacency_list) != 0:
             data += ("loop_\n"
                      + "_topol_link.node_id_1\n"
@@ -337,7 +352,7 @@ class Structure:
             for i, ns in enumerate(self.adjacency_list):
                 for j, translation, bond_type in ns:
                     if i < j:
-                        data += "{} {} 1 0 0 0 1 {} {} {} {} 1 \n".format(i + 1, j + 1, *translation, bond_type)
+                        data += "{0:<5} {1:<5} 1 0 0 0 1 {2:>2} {3:>2} {4:>2} {5:>3} 1 \n".format(i + 1, j + 1, *translation, bond_type)
         data += "#End of " + self.name + '\n'
         return data
 
@@ -345,24 +360,33 @@ class Structure:
 tic = time()
 for system in (
         'water_md_full',
-        'benzac02mdc', 'benzac02mdc_reverse', 'crotac01mdc',
-        'glucmdc', 'glucmdc_420K', 'glucmdc_620K', 'py1mdc',
+        # 'benzac02mdc', 'benzac02mdc_reverse', 'crotac01mdc',
+        # 'glucmdc', 'glucmdc_420K', 'glucmdc_620K',
+        # 'py1mdc',
+        # 'b3mdc',
 ):
 
     selected_intermolecular_bonds = ('hb', )
-    MAX_FRAME = 1000
-    STEP = 4
-    analysis_results = []
+    MAX_FRAME = 1000                         # max frame to be read
+    STEP = 1                                 # frame read in step
+    snapshot_graphs = []                     # list with representation graphs of each frame
+
+    # read in the valence bond connectivity if present
+    if os.path.exists(f"{system}.vconnectivity"):
+        with open(f"{system}.vconnectivity", "rb") as inp:
+            v_bond_pairs = pickle.load(inp)
+    else:
+        v_bond_pairs = None
 
     for i, frame in tqdm(enumerate(read_xyz(f'{system}.xyz')), desc=system):
 
-        if i % STEP == 0:
+        if i % STEP == 0: 
             _, symbols, coordinates, lattice = frame
-            structure = Structure(f"frame_{i}", lattice, symbols, coordinates)
+            structure = Structure(f"frame_{i}", lattice, symbols, coordinates, vconnectivity=v_bond_pairs)
             structure.identify_bonds(tol=0.2, omega_threshold=0.25, check_direct=False)
             if 'hb' in selected_intermolecular_bonds:
                 structure.find_hydrogen_bonds(
-                    D_atoms=('O', 'N', ),  # 'O' 'N' 'C'
+                    D_atoms=('O', 'N', 'C'),  # 'O' 'N' 'C'
                     A_atoms=('O', 'N'),
                     r_HA=2.5,
                     angle=120
@@ -370,7 +394,7 @@ for system in (
             simplified_graph = structure.get_molecular_graph(bond_types=selected_intermolecular_bonds)
             centroid_VDP_data = simplified_graph.get_centroid_LVDP_data(omega_threshold=0.1)
             nx_snapshot_graph = graph.NetworkxGraph(simplified_graph, centroid_VDP_data, i).get_graph_data()
-            analysis_results.append(nx_snapshot_graph)
+            snapshot_graphs.append(nx_snapshot_graph)
 
             if i % 500 == 0:
                 with open(f"./cifs/{system}_frame_{i}_structure.cif", "w") as nf:
@@ -382,7 +406,7 @@ for system in (
             break
 
     with open(f'MDTopAnalysis_{system}.nxg', 'wb') as out:
-        pickle.dump(analysis_results, out)
+        pickle.dump(snapshot_graphs, out)
 
 print(f'Total calculation time: {time() - tic:.1f} s')
 

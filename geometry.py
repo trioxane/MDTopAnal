@@ -144,10 +144,10 @@ class Voro:
 
         neighbours_dict = {
             p1: {
-                'neighbour_index': [nd[0] for nd in neighbours],
-                 'SA': [nd[1] for nd in neighbours],
-                 'N_direct_neigbours': len([nd[2] for nd in neighbours if nd[2] == 'direct']),
-                 'N_indirect_neigbours': len([nd[2] for nd in neighbours if nd[2] == 'indirect'])
+                'neighbours_indices': [nd[0] for nd in neighbours],
+                'SA': [nd[1] for nd in neighbours],
+                'N_direct_neighbours': len([nd[2] for nd in neighbours if nd[2] == 'direct']),
+                'N_indirect_neighbours': len([nd[2] for nd in neighbours if nd[2] == 'indirect'])
             }
             for p1, neighbours in p_neighbours_dict.items()
         }

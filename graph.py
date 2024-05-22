@@ -81,24 +81,25 @@ class NetworkxGraph:
         nodes_data = {}
 
         G = nx.MultiGraph(name=self.name)
-        for node1, neigbours in enumerate(centroid_adjacency_list):
+        for node1, neighbours in enumerate(centroid_adjacency_list):
             node1_coordinates = centroid_cart_coords[node1]
-            node1_neigbours_SA_CV = np.std(centroid_VDP_data[node1]['SA']) / np.mean(centroid_VDP_data[node1]['SA'])
-            node1_N_direct_neigbours = centroid_VDP_data[node1]['N_direct_neigbours']
-            node1_N_indirect_neigbours = centroid_VDP_data[node1]['N_indirect_neigbours']
-            node1_N_neigbours = node1_N_direct_neigbours + node1_N_indirect_neigbours
+            node1_neighbours_SA_CV = np.std(centroid_VDP_data[node1]['SA']) / np.mean(centroid_VDP_data[node1]['SA'])
+            node1_N_direct_neighbours = centroid_VDP_data[node1]['N_direct_neighbours']
+            node1_N_indirect_neighbours = centroid_VDP_data[node1]['N_indirect_neighbours']
+            node1_N_neigbours = node1_N_direct_neighbours + node1_N_indirect_neighbours
 
             nodes_data[node1] = {
                 'frame': self.frame,
-                'neigbours_SA_CV': node1_neigbours_SA_CV,
-                'N_direct_neigbours': node1_N_direct_neigbours,
-                'N_indirect_neigbours': node1_N_indirect_neigbours,
-                'N_neigbours': node1_N_neigbours
+                'neighbours_SA_CV': node1_neighbours_SA_CV,
+                'N_direct_neighbours': node1_N_direct_neighbours,
+                'N_indirect_neighbours': node1_N_indirect_neighbours,
+                'N_neighbours': node1_N_neigbours,
+                'neighbours_indices': centroid_VDP_data[node1]['neighbours_indices'],
             }
             G.add_node(node1, coordinates=node1_coordinates)
 
-            for neigbour in neigbours:
-                node2, translation, _ = neigbour
+            for neighbour in neighbours:
+                node2, translation, _ = neighbour
                 if translation != (0, 0, 0):
                     # avoiding duplication of edges in the LQG by mapping half of the translations to its mirrors
                     translation = t_DICT.get(translation, translation)
@@ -111,6 +112,7 @@ class NetworkxGraph:
 
     def get_graph_data(self):
         return dict(G=self.G, nodes_data=self.nodes_data)
+
     def save_graph(self, frame_number):
         with open(f'G_{self.name}_{frame_number}.nxg', 'wb') as out:
             pickle.dump(self.G, out)
