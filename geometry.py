@@ -144,7 +144,7 @@ class Voro:
 
         neighbours_dict = {
             p1: {
-                'neighbours_indices': [nd[0] for nd in neighbours],
+                'neighbours_indices': set([nd[0] for nd in neighbours]),
                 'SA': [nd[1] for nd in neighbours],
                 'N_direct_neighbours': len([nd[2] for nd in neighbours if nd[2] == 'direct']),
                 'N_indirect_neighbours': len([nd[2] for nd in neighbours if nd[2] == 'indirect'])
