@@ -169,7 +169,7 @@ class Structure:
 
         return points_VDP_data
 
-    def identify_bonds(self, tol=0.2, omega_threshold=0.25, check_direct=False):
+    def identify_bonds(self, r_cov_sum_tolerance=0.2, omega_threshold=0.25, check_direct=False, v_connectivity_only=False):
 
         a, b, c = self.unit_cell.vectors
         translations = [(i, j, k) for i in range(-1, 2) for j in range(-1, 2) for k in range(-1, 2)]
@@ -178,8 +178,27 @@ class Structure:
         extended_coordinates = [c + t for t in t_vectors for c in self.cart_coords]
         atom_index_translation = [(i, t) for t in translations for i in range(len(self.cart_coords))]
 
-        contacts = Voro(extended_coordinates, len(self.cart_coords)).calc_p_adjacency(
-            omega_threshold=omega_threshold, check_direct=check_direct)
+        if v_connectivity_only:
+            contacts = [[] for _ in range(len(self.cart_coords))]
+
+            for atom1_index, atom2_index in self.vconnectivity:
+                if np.linalg.norm(extended_coordinates[atom1_index] - extended_coordinates[atom2_index]) > 3.0:
+                    # print(atom1_index, atom2_index, np.linalg.norm(extended_coordinates[atom1_index] - extended_coordinates[atom2_index]))
+                    dists = [np.linalg.norm(extended_coordinates[atom1_index] - extended_coordinates[atom2_index] - t)
+                             for t in t_vectors]
+                    # print(dists[:5], dists.index(min(dists)), translations[dists.index(min(dists))])
+                    atom2_index = [i
+                                   for i, value in enumerate(atom_index_translation)
+                                   if value[0] == atom2_index and value[1] == translations[dists.index(min(dists))]][0]
+                    # print(translations[dists.index(min(dists))], atom2_index)
+
+                contacts[atom1_index].append((atom2_index, 'direct'))
+                if atom2_index > len(self.cart_coords):
+                    atom2_index = atom_index_translation[atom2_index][0]
+                contacts[atom2_index].append((atom1_index, 'direct'))
+        else:
+            contacts = Voro(extended_coordinates, len(self.cart_coords)).calc_p_adjacency(
+                omega_threshold=omega_threshold, check_direct=check_direct)
 
         adjacency_list = [[] for _ in contacts]
         for i, neighbors in enumerate(contacts):
@@ -191,7 +210,7 @@ class Structure:
                     if (
                             type == "direct"
                             and
-                            np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) < r * (1 + tol)
+                            np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) < r * (1 + r_cov_sum_tolerance)
                     ):
                         contact_type = "v"
                     else:
@@ -199,6 +218,14 @@ class Structure:
                 else:
                     if ((i, index) in self.vconnectivity) or ((index, i) in self.vconnectivity):
                         contact_type = "v"
+                        if np.linalg.norm(extended_coordinates[i] - extended_coordinates[j]) > 3.0:
+                            # print(i, j, index, translation)
+                            dists = [np.linalg.norm(extended_coordinates[i] - extended_coordinates[index] - t)
+                                     for t in t_vectors]
+                            if translation != translations[dists.index(min(dists))]:
+                                contact_type = "vw"
+                                # print('correction')
+                                # print(i, j, index, translation)
                     else:
                         contact_type = "vw"
 
@@ -381,8 +408,8 @@ tic = time()
 for system in (
         # 'water_md_full',
         # 'etolmdc',
-        # 'bzammdc',
-        'pntnmdc',
+        'bzammdc',
+        # 'pntnmdc',
         # 'benzac02mdc',
         # 'benzac02mdc_reverse',
         # 'crotac01mdc',
@@ -393,10 +420,14 @@ for system in (
         # 'b3mdc',
 ):
 
-    selected_intermolecular_bonds = ('hb', )
-    START_FRAME = 500
-    MAX_FRAME = 1700                         # max frame to be read
-    STEP = 2                                 # frame read in step
+    selected_intermolecular_bonds = ()
+    v_connectivity_only = False
+    if len(selected_intermolecular_bonds) == 0:
+        v_connectivity_only = True
+
+    START_FRAME = 0
+    MAX_FRAME = 2500                         # max frame to be read
+    STEP = 1                                  # frame read in step
 
     # read in the valence bond connectivity if present
     if os.path.exists(f"{system}_connectivity.cif"):
@@ -412,10 +443,17 @@ for system in (
         if i < START_FRAME:
             continue
 
-        if i % STEP == 0: 
+        if i % STEP == 0:
+
             _, symbols, coordinates, lattice = frame
             structure = Structure(f"frame_{i}", lattice, symbols, coordinates, vconnectivity=v_bonds)
-            structure.identify_bonds(tol=0.2, omega_threshold=0.25, check_direct=False)
+            structure.identify_bonds(
+                r_cov_sum_tolerance=0.2,
+                omega_threshold=0.25,
+                check_direct=False,
+                v_connectivity_only=v_connectivity_only
+            )
+
             if 'hb' in selected_intermolecular_bonds:
                 structure.find_hydrogen_bonds(
                     D_atoms=('O', 'N'),  # 'O' 'N' 'C'
@@ -423,16 +461,20 @@ for system in (
                     r_HA=2.5,
                     angle=120
                 )
-            simplified_graph = structure.get_molecular_graph(bond_types=selected_intermolecular_bonds)
-            centroid_VDP_data = simplified_graph.get_centroid_LVDP_data(omega_threshold=0.1)
-            nx_snapshot_graph = graph.NetworkxGraph(simplified_graph, centroid_VDP_data, i).get_graph_data()
+
+            simplified_net = structure.get_molecular_graph(bond_types=selected_intermolecular_bonds)
+            packing_net = structure.get_molecular_graph(bond_types=('vw', 'hb'))
+            centroid_VDP_data = simplified_net.get_centroid_LVDP_data(omega_threshold=0.1)
+            nx_snapshot_graph = graph.NetworkxGraph(simplified_net, centroid_VDP_data, i).get_graph_data()
             snapshot_graphs.append(nx_snapshot_graph)
 
-            if i % 500 == 0:
+            if i % 50 == 0:
                 with open(f"./cifs/{system}_frame_{i}_structure.cif", "w") as nf:
                     nf.write(str(structure))
-                with open(f"./cifs/{system}_frame_{i}_simplified.cif", "w") as nf:
-                    nf.write(str(simplified_graph))
+                with open(f"./cifs/{system}_frame_{i}_simplified_net.cif", "w") as nf:
+                    nf.write(str(simplified_net))
+                with open(f"./cifs/{system}_frame_{i}_packing_net.cif", "w") as nf:
+                    nf.write(str(packing_net))
 
         if i == MAX_FRAME:
             break
