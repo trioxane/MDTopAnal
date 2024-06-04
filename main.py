@@ -3,7 +3,7 @@ from read_write import read_xyz
 from geometry import Voro, calc_angles
 from constants import *
 from graph import PeriodicGraph
-from collections import Counter
+from collections import Counter, defaultdict
 
 import os
 import pickle
@@ -178,6 +178,10 @@ class Structure:
         extended_coordinates = [c + t for t in t_vectors for c in self.cart_coords]
         atom_index_translation = [(i, t) for t in translations for i in range(len(self.cart_coords))]
 
+        atom_index_translation_dict = defaultdict(dict)
+        for i, (ind, t) in enumerate(atom_index_translation):
+            atom_index_translation_dict[ind][t] = i
+
         if v_connectivity_only:
             contacts = [[] for _ in range(len(self.cart_coords))]
 
@@ -187,9 +191,7 @@ class Structure:
                     dists = [np.linalg.norm(extended_coordinates[atom1_index] - extended_coordinates[atom2_index] - t)
                              for t in t_vectors]
                     # print(dists[:5], dists.index(min(dists)), translations[dists.index(min(dists))])
-                    atom2_index = [i
-                                   for i, value in enumerate(atom_index_translation)
-                                   if value[0] == atom2_index and value[1] == translations[dists.index(min(dists))]][0]
+                    atom2_index = atom_index_translation_dict[atom2_index][translations[dists.index(min(dists))]]
                     # print(translations[dists.index(min(dists))], atom2_index)
 
                 contacts[atom1_index].append((atom2_index, 'direct'))
@@ -468,7 +470,7 @@ for system in (
             nx_snapshot_graph = graph.NetworkxGraph(simplified_net, centroid_VDP_data, i).get_graph_data()
             snapshot_graphs.append(nx_snapshot_graph)
 
-            if i % 50 == 0:
+            if i % 500 == 0:
                 with open(f"./cifs/{system}_frame_{i}_structure.cif", "w") as nf:
                     nf.write(str(structure))
                 with open(f"./cifs/{system}_frame_{i}_simplified_net.cif", "w") as nf:
